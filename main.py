@@ -368,7 +368,6 @@ async def get_scans_by_date(target_date: date):
         logger.error(f"Ошибка получения сканирований: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/api/scans/date-range")
 async def get_scans_by_date_range(date_range: DateRangeRequest):
     """Получение сканирований за период"""
