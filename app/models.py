@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List, Literal
 from datetime import datetime
 
 
@@ -28,3 +28,40 @@ class PairDTO(BaseModel):
             product=self.product,
             scan_date=datetime.fromisoformat(self.timestamp)
         )
+
+
+# WebSocket сообщения
+class WSHeartbeatIn(BaseModel):
+    type: Literal['heartbeat']
+    timestamp: Optional[str] = None
+    client: Optional[str] = None
+
+
+class WSHeartbeatAck(BaseModel):
+    type: Literal['heartbeat_ack'] = 'heartbeat_ack'
+    timestamp: str
+
+
+class WSNewPairData(BaseModel):
+    platform: int
+    product: int
+    timestamp: str
+
+
+class WSNewPair(BaseModel):
+    type: Literal['new_pair'] = 'new_pair'
+    data: WSNewPairData
+
+
+class WSScannerInfo(BaseModel):
+    client: str
+    connected_at: str
+    last_heartbeat: str
+    is_active: bool
+
+
+class WSScannerStatus(BaseModel):
+    type: Literal['scanner_status'] = 'scanner_status'
+    scanners: List[WSScannerInfo]
+    has_active_scanners: bool
+    timestamp: str

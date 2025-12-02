@@ -6,6 +6,7 @@ from typing import List
 from fastapi import WebSocket
 
 from app.database import DatabaseManager
+from app.models import WSHeartbeatAck, WSScannerStatus, WSScannerInfo
 
 
 logger = logging.getLogger(__name__)
@@ -79,13 +80,14 @@ class EnhancedConnectionManager:
 
     async def broadcast_scanner_status(self):
         scanners_info = self.get_connected_scanners_info()
-        message = {
-            "type": "scanner_status",
-            "scanners": scanners_info,
-            "has_active_scanners": len([s for s in scanners_info if s['is_active']]) > 0,
-            "timestamp": datetime.now().isoformat()
-        }
-        await self.broadcast(message)
+        payload = WSScannerStatus(
+            scanners=[
+                WSScannerInfo(**s) for s in scanners_info
+            ],
+            has_active_scanners=len([s for s in scanners_info if s['is_active']]) > 0,
+            timestamp=datetime.now().isoformat()
+        )
+        await self.broadcast(payload.dict())
 
     def update_scanner_heartbeat(self, websocket: WebSocket):
         if websocket in self.scanner_connections:
@@ -115,11 +117,8 @@ class EnhancedConnectionManager:
 
                 logger.info(f"Heartbeat от {data.get('client', 'unknown')}")
 
-                response = {
-                    "type": "heartbeat_ack",
-                    "timestamp": datetime.now().isoformat()
-                }
-                await websocket.send_text(json.dumps(response))
+                response = WSHeartbeatAck(timestamp=datetime.now().isoformat())
+                await websocket.send_text(json.dumps(response.dict()))
             else:
                 logger.info(f"Получено сообщение типа {message_type} от клиента")
         except json.JSONDecodeError:

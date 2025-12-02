@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from fastapi import APIRouter, HTTPException
 
-from app.models import PairDTO
+from app.models import PairDTO, WSNewPair, WSNewPairData
 from app.services.websocket_manager import EnhancedConnectionManager
 from app.database import DatabaseManager
 
@@ -26,15 +26,14 @@ def get_api_router(manager: EnhancedConnectionManager, db_manager: DatabaseManag
                     product=pair.product
                 )
 
-                message = {
-                    "type": "new_pair",
-                    "data": {
-                        "platform": pair.platform,
-                        "product": pair.product,
-                        "timestamp": pair.timestamp
-                    }
-                }
-                await manager.broadcast(message)
+                payload = WSNewPair(
+                    data=WSNewPairData(
+                        platform=pair.platform,
+                        product=pair.product,
+                        timestamp=pair.timestamp
+                    )
+                )
+                await manager.broadcast(payload.dict())
 
                 return {"status": "success", "message": "Сканирование добавлено в базу данных"}
             else:
