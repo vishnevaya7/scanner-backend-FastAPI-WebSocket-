@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from typing import List
 import json
 import asyncio
-from datetime import datetime, date
+from datetime import datetime
 import logging
 from contextlib import asynccontextmanager
 from colorlog import ColoredFormatter
@@ -114,8 +114,6 @@ class EnhancedConnectionManager:
             self.active_connections.append(websocket)
             logger.info(f"WebSocket подключен. Всего подключений: {len(self.active_connections)}")
 
-            # Отправляем начальные данные
-            await self.send_initial_data(websocket)
         except Exception as e:
             logger.error(f"Ошибка при подключении WebSocket: {e}")
             if websocket in self.active_connections:
@@ -151,34 +149,6 @@ class EnhancedConnectionManager:
         self.scanner_connections.clear()
         logger.info("Все WebSocket соединения закрыты")
 
-    async def send_initial_data(self, websocket: WebSocket):
-        try:
-            # Получаем данные за сегодня из базы данных
-            today_scans = await self.db_manager.get_scans_by_date(date.today())
-            statistics = await self.db_manager.get_scan_statistics()
-            
-            # Конвертируем сканирования в формат пар для совместимости с frontend
-            pairs_data = []
-            for scan in today_scans:
-                pairs_data.append({
-                    "platform": scan["platform"],
-                    "product": scan["product"],
-                    "timestamp": scan["scan_date"]
-                })
-            
-            message = {
-                "type": "initial_data",
-                "data": pairs_data,
-                "total_pairs": len(pairs_data),
-                "statistics": statistics
-            }
-            
-            logger.info(f"Отправка начальных данных: {len(pairs_data)} пар")
-            await websocket.send_text(json.dumps(message, ensure_ascii=False))
-            
-        except Exception as e:
-            logger.error(f"Ошибка отправки начальных данных: {e}")
-            raise
 
     async def broadcast(self, message: dict):
         if self.active_connections:
