@@ -1,0 +1,49 @@
+import logging
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.core.logging_config import configure_logging
+from app.database import DatabaseManager
+from app.services.websocket_manager import EnhancedConnectionManager
+from app.routers.websocket import get_websocket_router
+from app.routers.api import get_api_router
+
+
+def create_app() -> FastAPI:
+    configure_logging()
+    logger = logging.getLogger(__name__)
+
+    db_manager = DatabaseManager()
+    manager = EnhancedConnectionManager(db_manager)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        try:
+            await db_manager.init_database()
+            logger.info("Приложение инициализировано")
+            yield
+        finally:
+            logger.info("Завершение работы приложения...")
+            await manager.close_all_connections()
+            logger.info("Приложение завершено")
+
+    app = FastAPI(
+        title="Enhanced Scanner Backend",
+        version="1.1.0",
+        lifespan=lifespan,
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
+
+    app.include_router(get_api_router(manager, db_manager))
+    app.include_router(get_websocket_router(manager))
+
+    return app

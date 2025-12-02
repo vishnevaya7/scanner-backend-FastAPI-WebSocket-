@@ -11,7 +11,6 @@ class ScanRequest(BaseModel):
     scan_date: datetime = Field(..., description="Дата сканирования")
 
 
-
 # Устаревшая модель для обратной совместимости
 class PairDTO(BaseModel):
     """Устаревшая модель пары (для обратной совместимости)"""
