@@ -6,6 +6,9 @@ import json
 import asyncio
 from datetime import datetime, date
 import logging
+from contextlib import asynccontextmanager
+from colorlog import ColoredFormatter
+import colorama
 
 from database import DatabaseManager
 from models import (
@@ -14,19 +17,76 @@ from models import (
     AllPlatformsStatusResponse, PairDTO
 )
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
+def configure_logging():
+    colorama.just_fix_windows_console()
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # remove existing handlers to prevent duplicate logs on reload
+    for h in list(root_logger.handlers):
+        root_logger.removeHandler(h)
+
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    formatter = ColoredFormatter(
+        "%(log_color)s%(levelname)-8s%(reset)s | %(asctime)s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+        log_colors={
+            "DEBUG": "cyan",
+            "INFO": "green",
+            "WARNING": "yellow",
+            "ERROR": "red",
+            "CRITICAL": "bold_red",
+        },
+    )
+    handler.setFormatter(formatter)
+    root_logger.addHandler(handler)
+
+    # Apply same handler to uvicorn loggers
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        l = logging.getLogger(name)
+        l.setLevel(logging.INFO)
+        for h in list(l.handlers):
+            l.removeHandler(h)
+        l.addHandler(handler)
+        l.propagate = False
+
+configure_logging()
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Enhanced Scanner Backend", version="1.1.0")
+# Инициализация базы данных
+db_manager = DatabaseManager()
 
-# CORS настройки
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Управление жизненным циклом приложения"""
+    # Startup
+    try:
+        await db_manager.init_database()
+        logger.info("Приложение инициализировано")
+        yield
+    finally:
+        # Shutdown
+        logger.info("Завершение работы приложения...")
+        # Закрываем все WebSocket соединения корректно
+        if 'manager' in globals():
+            await manager.close_all_connections()
+        logger.info("Приложение завершено")
+
+app = FastAPI(
+    title="Enhanced Scanner Backend", 
+    version="1.1.0",
+    lifespan=lifespan
+)
+
+# CORS настройки - расширенные для WebSocket
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # В продакшене указать конкретные домены
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 
@@ -42,28 +102,29 @@ class HeartbeatMessage(BaseModel):
     client: str
 
 
-# Инициализация базы данных
-db_manager = DatabaseManager()
-
-# Хранение данных в памяти (для обратной совместимости и кэширования)
-pairs_storage: List[PairDTO] = []
-active_connections: List[WebSocket] = []
-connected_scanners: dict = {}  # Хранение информации о подключенных сканерах
+# Убрано локальное хранение - все данные теперь в базе данных
 
 
-# Улучшенный WebSocket менеджер
+# Улучшенный WebSocket менеджер без локального хранения
 class EnhancedConnectionManager:
-    def __init__(self):
+    def __init__(self, database_manager: DatabaseManager):
         self.active_connections: List[WebSocket] = []
         self.scanner_connections: dict = {}  # WebSocket -> scanner_info
+        self.db_manager = database_manager
 
     async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        logger.info(f"WebSocket подключен. Всего подключений: {len(self.active_connections)}")
+        try:
+            await websocket.accept()
+            self.active_connections.append(websocket)
+            logger.info(f"WebSocket подключен. Всего подключений: {len(self.active_connections)}")
 
-        # Отправляем начальные данные
-        await self.send_initial_data(websocket)
+            # Отправляем начальные данные
+            await self.send_initial_data(websocket)
+        except Exception as e:
+            logger.error(f"Ошибка при подключении WebSocket: {e}")
+            if websocket in self.active_connections:
+                self.active_connections.remove(websocket)
+            raise
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
@@ -74,17 +135,54 @@ class EnhancedConnectionManager:
             scanner_info = self.scanner_connections.pop(websocket)
             logger.info(f"Сканер отключен: {scanner_info.get('client', 'unknown')}")
             # Уведомляем всех клиентов об отключении сканера
-            asyncio.create_task(self.broadcast_scanner_status())
+            try:
+                asyncio.create_task(self.broadcast_scanner_status())
+            except Exception as e:
+                logger.error(f"Ошибка уведомления о статусе сканера: {e}")
 
         logger.info(f"WebSocket отключен. Всего подключений: {len(self.active_connections)}")
 
+    async def close_all_connections(self):
+        """Корректное закрытие всех WebSocket соединений"""
+        logger.info("Закрытие всех WebSocket соединений...")
+        for connection in self.active_connections.copy():
+            try:
+                await connection.close(code=1000, reason="Server shutdown")
+            except Exception as e:
+                logger.error(f"Ошибка закрытия WebSocket: {e}")
+        
+        self.active_connections.clear()
+        self.scanner_connections.clear()
+        logger.info("Все WebSocket соединения закрыты")
+
     async def send_initial_data(self, websocket: WebSocket):
-        message = {
-            "type": "initial_data",
-            "data": [pair.dict() for pair in pairs_storage],
-            "total_pairs": len(pairs_storage)
-        }
-        await websocket.send_text(json.dumps(message, ensure_ascii=False))
+        try:
+            # Получаем данные за сегодня из базы данных
+            today_scans = await self.db_manager.get_scans_by_date(date.today())
+            statistics = await self.db_manager.get_scan_statistics()
+            
+            # Конвертируем сканирования в формат пар для совместимости с frontend
+            pairs_data = []
+            for scan in today_scans:
+                pairs_data.append({
+                    "platform": scan["platform"],
+                    "product": scan["product"],
+                    "timestamp": scan["scan_date"]
+                })
+            
+            message = {
+                "type": "initial_data",
+                "data": pairs_data,
+                "total_pairs": len(pairs_data),
+                "statistics": statistics
+            }
+            
+            logger.info(f"Отправка начальных данных: {len(pairs_data)} пар")
+            await websocket.send_text(json.dumps(message, ensure_ascii=False))
+            
+        except Exception as e:
+            logger.error(f"Ошибка отправки начальных данных: {e}")
+            raise
 
     async def broadcast(self, message: dict):
         if self.active_connections:
@@ -175,27 +273,38 @@ class EnhancedConnectionManager:
             logger.error(f"Ошибка обработки сообщения: {e}")
 
 
-manager = EnhancedConnectionManager()
+manager = EnhancedConnectionManager(db_manager)
 
-
-@app.on_event("startup")
-async def startup_event():
-    """Инициализация при запуске приложения"""
-    await db_manager.init_database()
-    logger.info("Приложение инициализировано")
 
 
 # WebSocket endpoint с улучшенной обработкой
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+    client_info = f"{websocket.client.host}:{websocket.client.port}" if websocket.client else "unknown"
+    logger.info(f"Попытка подключения WebSocket от {client_info}")
+    
     try:
+        await manager.connect(websocket)
+        logger.info(f"WebSocket успешно подключен от {client_info}")
+        
         while True:
-            # Ждем сообщения от клиента
-            data = await websocket.receive_text()
-            await manager.handle_message(websocket, data)
-    except WebSocketDisconnect:
+            try:
+                # Ждем сообщения от клиента
+                data = await websocket.receive_text()
+                await manager.handle_message(websocket, data)
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket отключен клиентом {client_info}")
+                break
+            except Exception as e:
+                logger.error(f"Ошибка обработки сообщения от {client_info}: {e}")
+                # Продолжаем работу, не разрывая соединение
+                continue
+                
+    except Exception as e:
+        logger.error(f"Ошибка WebSocket соединения с {client_info}: {e}")
+    finally:
         manager.disconnect(websocket)
+        logger.info(f"WebSocket соединение с {client_info} закрыто")
 
 
 # REST API endpoints
@@ -209,36 +318,25 @@ async def post_data(pair: PairDTO):
 
         logger.info(f"Получена пара: платформа {pair.platform}, продукт {pair.product}")
 
-        # Сохраняем в памяти (для обратной совместимости)
-        pairs_storage.append(pair)
-
         # Если есть продукт, сохраняем в базу данных
         if pair.product is not None:
-            # Конвертируем в новую модель
-            scan_request = pair.to_scan_request()
-            if scan_request:
-                # Сохраняем в базу данных
-                scan_id = await db_manager.add_scan(
-                    platform=scan_request.platform,
-                    product=scan_request.product
-                )
-                
-                # Получаем статистику
-                statistics = await db_manager.get_scan_statistics()
-                
-                # Отправляем уведомление через WebSocket
-                message = {
-                    "type": "new_scan",
-                    "data": {
-                        "id": scan_id,
-                        "platform": scan_request.platform,
-                        "product": scan_request.product,
-                        "scan_time": (scan_request.scan_date or datetime.now()).isoformat()
-                    },
-                    "statistics": statistics,
-                    "legacy_data": pair.dict()  # Для обратной совместимости
+            # Сохраняем в базу данных
+            scan_id = await db_manager.add_scan(
+                platform=pair.platform,
+                product=pair.product
+            )
+
+
+            # Отправляем уведомление через WebSocket в формате, совместимом с frontend
+            message = {
+                "type": "new_pair",
+                "data": {
+                    "platform": pair.platform,
+                    "product": pair.product,
+                    "timestamp": pair.timestamp
                 }
-                await manager.broadcast(message)
+            }
+            await manager.broadcast(message)
 
             return {"status": "success", "message": "Сканирование добавлено в базу данных"}
         else:
@@ -251,41 +349,72 @@ async def post_data(pair: PairDTO):
 
 @app.get("/api/pairs")
 async def get_all_pairs():
-    """Получение всех пар"""
-    return {
-        "pairs": pairs_storage,
-        "total": len(pairs_storage)
-    }
+    """Получение всех сканирований за сегодня (обратная совместимость)"""
+    try:
+        # Получаем сканирования за сегодня
+        today_scans = await db_manager.get_scans_by_date(date.today())
+        
+        # Конвертируем в формат PairDTO для обратной совместимости
+        pairs = []
+        for scan in today_scans:
+            pairs.append({
+                "platform": scan["platform"],
+                "product": scan["product"],
+                "timestamp": scan["scan_date"]
+            })
+        
+        return {
+            "pairs": pairs,
+            "total": len(pairs)
+        }
+    except Exception as e:
+        logger.error(f"Ошибка получения пар: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/api/pairs")
 async def clear_pairs():
-    """Очистка всех пар"""
-    global pairs_storage
-    pairs_storage.clear()
+    """Очистка всех сканирований (обратная совместимость)"""
+    try:
+        # Очищаем все сканирования в базе данных
+        deleted_count = await db_manager.clear_all_scans()
 
-    # Уведомляем клиентов об очистке
-    message = {
-        "type": "pairs_cleared",
-        "data": {},
-        "total_pairs": 0
-    }
-    await manager.broadcast(message)
+        # Уведомляем клиентов об очистке
+        message = {
+            "type": "pairs_cleared",
+            "data": {},
+            "total_pairs": 0,
+            "deleted_count": deleted_count
+        }
+        await manager.broadcast(message)
 
-    return {"status": "success", "message": "Все пары очищены"}
+        return {"status": "success", "message": f"Очищено {deleted_count} сканирований"}
+    except Exception as e:
+        logger.error(f"Ошибка очистки: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/status")
 async def get_status():
     """Расширенный статус сервера"""
-    return {
-        "status": "running",
-        "total_pairs": len(pairs_storage),
-        "active_connections": len(manager.active_connections),
-        "connected_scanners": len(manager.scanner_connections),
-        "scanners_info": manager.get_connected_scanners_info(),
-        "timestamp": datetime.now().isoformat()
-    }
+    try:
+        # Получаем статистику из базы данных
+        statistics = await db_manager.get_scan_statistics()
+        today_scans = await db_manager.get_scans_by_date(date.today())
+        
+        return {
+            "status": "running",
+            "total_scans": statistics["total_scans"],
+            "today_scans": len(today_scans),
+            "active_connections": len(manager.active_connections),
+            "connected_scanners": len(manager.scanner_connections),
+            "scanners_info": manager.get_connected_scanners_info(),
+            "statistics": statistics,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Ошибка получения статуса: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/scanners")
@@ -312,15 +441,15 @@ async def add_scan(scan_request: ScanRequest):
         # Получаем статистику
         statistics = await db_manager.get_scan_statistics()
         
-        # Отправляем уведомление через WebSocket
+        # Отправляем уведомление через WebSocket в формате, совместимом с frontend
         message = {
-            "type": "new_scan",
+            "type": "new_pair",
             "data": {
-                "id": scan_id,
                 "platform": scan_request.platform,
                 "product": scan_request.product,
-                "scan_time": scan_datetime.isoformat()
+                "timestamp": scan_datetime.isoformat()
             },
+            "total_pairs": statistics["total_scans"],
             "statistics": statistics
         }
         await manager.broadcast(message)
