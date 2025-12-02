@@ -52,6 +52,12 @@ class WSNewPair(BaseModel):
     type: Literal['new_pair'] = 'new_pair'
     data: WSNewPairData
 
+class WSChangePlatformData(BaseModel):
+    platform: int
+
+class WSChangePlatform(BaseModel):
+    type: Literal['change_platform'] = 'change_platform'
+    data: WSChangePlatformData
 
 class WSScannerInfo(BaseModel):
     client: str

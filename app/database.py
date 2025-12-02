@@ -70,3 +70,70 @@ class DatabaseManager:
                 f"Добавлено сканирование: ID={scan_id}, платформа={platform}, продукт={product}"
             )
             return scan_id
+
+    async def get_scan_pairs(
+        self,
+        platform: int | None = None,
+        product: int | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        date: str | None = None,
+    ) -> list[dict]:
+        """Получение списка сканирований (пар) с фильтрами.
+
+        Параметры даты ожидаются в ISO-формате. Если указан параметр `date`,
+        он интерпретируется как один день (date 00:00:00 .. 23:59:59.999999).
+        """
+        where_clauses = []
+        params: list = []
+
+        if platform is not None:
+            where_clauses.append("platform = ?")
+            params.append(platform)
+
+        if product is not None:
+            where_clauses.append("product = ?")
+            params.append(product)
+
+        # Обработка даты: либо одиночный день, либо диапазон
+        if date:
+            # Используем BETWEEN по строковым значениям ISO
+            where_clauses.append("scan_date BETWEEN ? AND ?")
+            start = f"{date}T00:00:00"
+            end = f"{date}T23:59:59.999999"
+            params.extend([start, end])
+        else:
+            if date_from:
+                where_clauses.append("scan_date >= ?")
+                # Если пришла только дата без времени
+                params.append(date_from if "T" in date_from else f"{date_from}T00:00:00")
+            if date_to:
+                where_clauses.append("scan_date <= ?")
+                params.append(date_to if "T" in date_to else f"{date_to}T23:59:59.999999")
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        query = f"""
+            SELECT platform, product, scan_date
+            FROM scans
+            {where_sql}
+            ORDER BY scan_date ASC
+        """
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                result = [
+                    {
+                        "platform": row["platform"],
+                        "product": row["product"],
+                        "timestamp": row["scan_date"],
+                    }
+                    for row in rows
+                ]
+
+        logger.info(
+            f"Найдено пар: {len(result)} (filters: platform={platform}, product={product}, date={date}, date_from={date_from}, date_to={date_to})"
+        )
+        return result
