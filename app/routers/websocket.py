@@ -22,27 +22,31 @@ def get_websocket_router(manager: EnhancedConnectionManager) -> APIRouter:
                 token = auth_header.split(" ", 1)[1]
             if not token:
                 token = websocket.query_params.get("token")
+                if token:
+                    logger.warning(f"WS токен передан в query-параметрах от {client_info}. Рекомендуется использовать заголовок Authorization.")
             if not token:
-                await websocket.close(code=1008)
+                await websocket.close(code=1008, reason="Missing Authorization token")
                 return
             try:
-                verify_token(token)
-            except Exception:
-                await websocket.close(code=1008)
+                username = verify_token(token)
+                logger.info(f"Аутентифицирован пользователь {username} для WS от {client_info}")
+            except Exception as e:
+                logger.warning(f"Ошибка аутентификации WS от {client_info}: {e}")
+                await websocket.close(code=1008, reason="Invalid token")
                 return
 
             await manager.connect(websocket)
-            logger.info(f"WebSocket успешно подключен от {client_info}")
+            logger.info(f"WebSocket успешно подключен: пользователь={username}, клиент={client_info}")
 
             while True:
                 try:
                     data = await websocket.receive_text()
                     await manager.handle_message(websocket, data)
                 except WebSocketDisconnect:
-                    logger.info(f"WebSocket отключен клиентом {client_info}")
+                    logger.info(f"WebSocket отключен клиентом {client_info} (пользователь={username})")
                     break
                 except Exception as e:
-                    logger.error(f"Ошибка обработки сообщения от {client_info}: {e}")
+                    logger.error(f"Ошибка обработки сообщения от {client_info} (пользователь={username}): {e}")
                     continue
         except Exception as e:
             logger.error(f"Ошибка WebSocket соединения с {client_info}: {e}")
