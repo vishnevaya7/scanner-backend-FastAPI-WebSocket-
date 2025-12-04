@@ -2,6 +2,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.services.websocket_manager import EnhancedConnectionManager
+from app.core.auth import verify_token
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,21 @@ def get_websocket_router(manager: EnhancedConnectionManager) -> APIRouter:
         logger.info(f"Попытка подключения WebSocket от {client_info}")
 
         try:
+            auth_header = websocket.headers.get("authorization")
+            token = None
+            if auth_header and auth_header.lower().startswith("bearer "):
+                token = auth_header.split(" ", 1)[1]
+            if not token:
+                token = websocket.query_params.get("token")
+            if not token:
+                await websocket.close(code=1008)
+                return
+            try:
+                verify_token(token)
+            except Exception:
+                await websocket.close(code=1008)
+                return
+
             await manager.connect(websocket)
             logger.info(f"WebSocket успешно подключен от {client_info}")
 

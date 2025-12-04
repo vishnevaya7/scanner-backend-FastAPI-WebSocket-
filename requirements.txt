@@ -5,3 +5,5 @@ python-multipart
 aiosqlite
 colorlog
 colorama
+PyJWT
+python-dotenv

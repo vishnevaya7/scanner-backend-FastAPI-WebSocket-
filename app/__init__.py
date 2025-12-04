@@ -4,13 +4,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.logging_config import configure_logging
+from dotenv import load_dotenv
 from app.database import DatabaseManager
 from app.services.websocket_manager import EnhancedConnectionManager
 from app.routers.websocket import get_websocket_router
 from app.routers.api import get_api_router
+from app.routers import auth as auth_router
 
 
 def create_app() -> FastAPI:
+    load_dotenv()
     configure_logging()
     logger = logging.getLogger(__name__)
 
@@ -43,6 +46,10 @@ def create_app() -> FastAPI:
         expose_headers=["*"],
     )
 
+    # Публичный роутер логина (без зависимости авторизации)
+    app.include_router(auth_router.router)
+
+    # Защищенные API-роуты
     app.include_router(get_api_router(manager, db_manager))
     app.include_router(get_websocket_router(manager))
 

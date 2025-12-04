@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict
 from datetime import datetime
 
 
@@ -54,6 +54,7 @@ class WSNewPair(BaseModel):
 
 class WSChangePlatformData(BaseModel):
     platform: int
+    pairs: Dict[int, List[dict]]
 
 class WSChangePlatform(BaseModel):
     type: Literal['change_platform'] = 'change_platform'

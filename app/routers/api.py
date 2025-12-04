@@ -1,16 +1,39 @@
 import logging
 from datetime import datetime
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from app.models import PairDTO, WSNewPair, WSNewPairData, WSChangePlatformData, WSChangePlatform
 from app.services.websocket_manager import EnhancedConnectionManager
 from app.database import DatabaseManager
+from app.core.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 
 
 def get_api_router(manager: EnhancedConnectionManager, db_manager: DatabaseManager) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(get_current_user)])
+
+    async def get_dict(platform: int | None = None,
+                       product: int | None = None,
+                       date_from: str | None = None,
+                       date_to: str | None = None,
+                       date: str | None = None):
+        pairs = await db_manager.get_scan_pairs(
+            platform=platform,
+            product=product,
+            date_from=date_from,
+            date_to=date_to,
+            date=date,
+        )
+        platform_map: dict[int, list[dict]] = {}
+        for item in pairs:
+            plat = item["platform"]
+            prod = item["product"]
+            id = item["id"]
+            if plat not in platform_map:
+                platform_map[plat] = []
+            platform_map[plat].append({"product": prod, "scanId": id})
+        return platform_map
 
     @router.post("/api/scan_data")
     async def post_data(pair: PairDTO):
@@ -41,41 +64,33 @@ def get_api_router(manager: EnhancedConnectionManager, db_manager: DatabaseManag
             else:
                 await manager.broadcast(WSChangePlatform(
                     data=WSChangePlatformData(
-                        platform=pair.platform
+                        platform=pair.platform,
+                        pairs=await get_dict(platform=pair.platform)
                     )
                 ).model_dump())
-                return {"status": "success", "message": "Платформа изменена"}
+
+                return {"status": "success", "message": "Платформа изменена, отправлены пары за сегодня"}
         except Exception as e:
             logger.error(f"Ошибка обработки пары: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/api/scan/pairs")
     async def get_scan_pairs(
-        platform: int | None = None,
-        product: int | None = None,
-        dateFrom: str | None = None,
-        dateTo: str | None = None,
-        date: str | None = None,
+            platform: int | None = None,
+            product: int | None = None,
+            date_from: str | None = None,
+            date_to: str | None = None,
+            date: str | None = None,
     ):
         try:
             logger.info(
-                f"Запрос пар: platform={platform}, product={product}, date={date}, dateFrom={dateFrom}, dateTo={dateTo}"
+                f"Запрос пар: platform={platform}, product={product}, date={date}, dateFrom={date_from}, dateTo={date_to}"
             )
-            pairs = await db_manager.get_scan_pairs(
-                platform=platform,
-                product=product,
-                date_from=dateFrom,
-                date_to=dateTo,
-                date=date,
-            )
-            platform_map: dict[int, list[int]] = {}
-            for item in pairs:
-                plat = item["platform"]
-                prod = item["product"]
-                if plat not in platform_map:
-                    platform_map[plat] = []
-                platform_map[plat].append(prod)
-            return platform_map
+            return await get_dict(platform,
+                     product,
+                     date_from,
+                     date_to,
+                     date)
         except Exception as e:
             logger.error(f"Ошибка получения пар: {e}")
             raise HTTPException(status_code=500, detail=str(e))
