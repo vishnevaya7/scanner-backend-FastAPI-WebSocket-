@@ -5,7 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.logging_config import configure_logging
 from dotenv import load_dotenv
-from app.database import DatabaseManager
+from app.repository.database import DatabaseManager
+from app.repository.legacy_database import LegacyDatabaseManager
 from app.services.websocket_manager import EnhancedConnectionManager
 from app.routers.websocket import get_websocket_router
 from app.routers.api import get_api_router
@@ -18,6 +19,7 @@ def create_app() -> FastAPI:
     logger = logging.getLogger(__name__)
 
     db_manager = DatabaseManager()
+    legacy_db_manager = LegacyDatabaseManager()
     manager = EnhancedConnectionManager(db_manager)
 
     @asynccontextmanager
@@ -50,7 +52,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router)
 
     # Защищенные API-роуты
-    app.include_router(get_api_router(manager, db_manager))
+    app.include_router(get_api_router(manager, db_manager, legacy_db_manager))
     app.include_router(get_websocket_router(manager))
 
     return app

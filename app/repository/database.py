@@ -32,12 +32,14 @@ class DatabaseManager:
         async with self._connect() as db:
             await db.execute(
                 """
-                CREATE TABLE IF NOT EXISTS scans
+                CREATE TABLE IF NOT EXISTS scans 
                 (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     platform INTEGER NOT NULL,
                     product INTEGER NOT NULL,
-                    scan_date DATETIME DEFAULT CURRENT_TIMESTAMP
+                    scan_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    legacy_synced INTEGER DEFAULT 0,
+                    legacy_integration_error TEXT
                 )
                 """
             )
@@ -85,6 +87,32 @@ class DatabaseManager:
                 f"Добавлено сканирование: ID={scan_id}, платформа={platform}, продукт={product}"
             )
             return scan_id
+
+    async def mark_legacy_failed(self, scan_id: int, err: str) -> None:
+        async with self._connect() as db:
+            await db.execute(
+                """
+                UPDATE scans
+                SET legacy_synced = 0,
+                legacy_integration_error = ?
+                WHERE id = ?
+                """,
+                (err, scan_id),
+            )
+            await db.commit()
+
+    async def mark_legacy_completed(self, scan_id: int) -> None:
+        async with self._connect() as db:
+            await db.execute(
+                """
+                UPDATE scans
+                SET legacy_synced = 1,
+                    legacy_integration_error = NULL
+                WHERE id = ?
+                """,
+                (scan_id,),
+            )
+            await db.commit()
 
     async def get_scan_pairs(
         self,

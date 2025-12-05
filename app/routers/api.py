@@ -1,16 +1,18 @@
+import asyncio
 import logging
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends
 
+from app import LegacyDatabaseManager
 from app.models import PairDTO, WSNewPair, WSNewPairData, WSChangePlatformData, WSChangePlatform
 from app.services.websocket_manager import EnhancedConnectionManager
-from app.database import DatabaseManager
+from app.repository.database import DatabaseManager
 from app.core.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 
 
-def get_api_router(manager: EnhancedConnectionManager, db_manager: DatabaseManager) -> APIRouter:
+def get_api_router(manager: EnhancedConnectionManager, db_manager: DatabaseManager, legacy_db_manager: LegacyDatabaseManager) -> APIRouter:
     router = APIRouter(dependencies=[Depends(get_current_user)])
 
     async def get_dict(platform: int | None = None,
@@ -46,7 +48,7 @@ def get_api_router(manager: EnhancedConnectionManager, db_manager: DatabaseManag
                 return {"status": "error", "message": "Не указана платформа"}
 
             if pair.product is not None:
-                await db_manager.add_scan(
+                scan_id = await db_manager.add_scan(
                     platform=pair.platform,
                     product=pair.product
                 )
@@ -59,6 +61,16 @@ def get_api_router(manager: EnhancedConnectionManager, db_manager: DatabaseManag
                     )
                 )
                 await manager.broadcast(payload.model_dump())
+
+                async def _sync_legacy():
+                    try:
+                        await legacy_db_manager.add_scan(pair)
+                        await db_manager.mark_legacy_completed(scan_id)
+                    except Exception as e:
+                        logger.error(f"Ошибка записи в legacy БД: {e}")
+                        await db_manager.mark_legacy_failed(scan_id, str(e))
+
+                asyncio.create_task(_sync_legacy())
 
                 return {"status": "success", "message": "Сканирование добавлено в базу данных"}
             else:

@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import List
 from fastapi import WebSocket
 
-from app.database import DatabaseManager
+from app.repository.database import DatabaseManager
 from app.models import WSHeartbeatAck, WSScannerStatus, WSScannerInfo
 
 

@@ -7,3 +7,4 @@ colorlog
 colorama
 PyJWT
 python-dotenv
+fdb
